@@ -1,6 +1,7 @@
 import requests
 import json
 
+# Start the API first: uvicorn auth_api:app --reload
 BASE_URL = "http://127.0.0.1:8000"
 
 
