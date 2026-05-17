@@ -2,14 +2,15 @@ import os
 import re
 import json
 import base64
-from xml.dom.minidom import Document
-
+from docx import Document
+import tempfile
 import pdfplumber
 import requests
 from typing import List, Dict
 from dotenv import load_dotenv
 from google import genai
-
+from fastapi import FastAPI, UploadFile, File
+app = FastAPI()
 
 load_dotenv()
 
@@ -377,25 +378,23 @@ def run_evidence_agent(resume_text: str):
         "aggregated_skill_scores": aggregate_skill_scores(project_results),
         "aggregated_flags": aggregate_flags(project_results)
     }
-def evidence_agent(file_path: str):
-    resume_text = extract_text(file_path)
-    return run_evidence_agent(resume_text)
 
 
-if __name__ == "__main__":
-    fake_resume = """
-    John Doe
+@app.post("/evidence")
+async def evidence_endpoint(resume: UploadFile = File(...)):
 
-    Projects:
-    1. GPT Sandbox
-    GitHub: https://github.com/shreyashankar/gpt3-sandbox
+    suffix = os.path.splitext(resume.filename)[1]
 
-    2. Full Stack App
-    GitHub: https://github.com/tiangolo/full-stack-fastapi-template
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_file.write(await resume.read())
+        temp_path = temp_file.name
 
-    Skills:
-    FastAPI, React, Python, Machine Learning, SQL
-    """
+    try:
+        resume_text = extract_text(temp_path)
 
-    result = run_evidence_agent(fake_resume)
-    print(json.dumps(result, indent=2))
+        result = run_evidence_agent(resume_text)
+
+        return result
+
+    finally:
+        os.remove(temp_path)
