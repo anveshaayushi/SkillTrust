@@ -1,7 +1,8 @@
-
+from fastapi import FastAPI, UploadFile, File
 import os
 import json
 import re
+import tempfile
 from urllib import response
 import pdfplumber
 from google import genai
@@ -9,7 +10,7 @@ from docx import Document
 from pydantic import BaseModel
 from typing import List, Dict
 from dotenv import load_dotenv
-
+app = FastAPI()
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Schema — stays exactly the same
@@ -25,6 +26,8 @@ def extract_text(file_path: str) -> str:
             text = ""
             for page in pdf.pages:
                 text += page.extract_text() or ""
+        if not text.strip():
+            raise ValueError("No text found in PDF")
         return text
     elif file_path.endswith(".docx"):
         doc = Document(file_path)
@@ -74,17 +77,23 @@ def run_profile_agent(resume_text: str) -> ProfileOutput:
     return ProfileOutput(**json.loads(response.text))
 
 # Entry point — stays exactly the same
-def profile_agent(file_path: str) -> ProfileOutput:
-    resume_text = extract_text(file_path)
-    return run_profile_agent(resume_text)
 
-# Test block — stays exactly the same
-if __name__ == "__main__":
-    print("Testing with a fake resume...")
-    fake_resume = """
-    John Doe
-    Skills: React, FastAPI, Python, ML, problem-solving
-    Projects: Built e-commerce app with React and FastAPI
-    """
-    result = run_profile_agent(fake_resume)
-    print(result.model_dump_json(indent=2))
+@app.post("/profile")
+async def profile_endpoint(resume: UploadFile = File(...)):
+
+    suffix = os.path.splitext(resume.filename)[1]
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_file.write(await resume.read())
+        temp_path = temp_file.name
+
+    try:
+        resume_text = extract_text(temp_path)
+
+        result = run_profile_agent(resume_text)
+
+        return result.model_dump()
+
+    finally:
+        os.remove(temp_path)
+
