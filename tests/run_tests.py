@@ -5,7 +5,7 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from tests.test_cases import test_cases
-from main import evaluate
+from auth_logic import evaluate
 
 for case in test_cases:
     print(f"\n--- {case['name']} ---")
