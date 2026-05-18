@@ -1,3 +1,59 @@
+# SkillTrust Backend (orch branch)
+
+## Quick start (Person 1 / Person 5 integration)
+
+### 1. Create and activate virtual environment
+```
+python3 -m venv venv
+source venv/bin/activate        # Mac/Linux
+# venv\Scripts\activate           # Windows
+```
+
+### 2. Install dependencies
+```
+pip install -r requirements.txt
+```
+
+### 3. Environment variables
+Create a `.env` file in the project root (never commit this file):
+```
+GEMINI_API_KEY=your-gemini-key
+GITHUB_TOKEN=your-github-token   # optional, for evidence agent
+```
+
+### 4. Run the unified API (profile → evidence → authenticity)
+```
+uvicorn auth_api:app --reload
+```
+API: http://127.0.0.1:8000  
+Docs: http://127.0.0.1:8000/docs
+
+### 5. Run the orchestrator (full pipeline + final report)
+In a second terminal (with venv activated):
+```
+python orchestrator.py
+```
+
+### Core backend files
+```
+auth_api.py           — FastAPI entry (Person 5 connects here)
+auth_logic.py         — Trust / semantic scoring
+orchestrator.py       — Pipeline + final report builder
+profile_agent.py      — Resume skill extraction
+evidence_agent.py     — GitHub evidence analysis
+skill_testing_agent.py — Skill testing agent (Person 4)
+utils.py              — Shared scoring helpers
+tests/                — auth_logic unit tests
+```
+
+### API endpoints (do not rename)
+- GET  /
+- POST /profile
+- POST /evidence
+- POST /authenticity
+
+---
+
 # Person 4 — Skill Testing Agent
 # Step-by-step setup guide
 

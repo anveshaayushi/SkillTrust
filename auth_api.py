@@ -2,8 +2,10 @@ import os
 import tempfile
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from profile_agent import extract_text, run_profile_agent
+
+from auth_logic import evaluate as evaluate_authenticity
 from evidence_agent import run_evidence_agent
+from profile_agent import extract_text, run_profile_agent
 
 app = FastAPI()
 
@@ -67,7 +69,7 @@ def authenticity_agent(data: dict):
     evidence = data["evidence"]
 
     claimed_skills = profile["skills"]
-    evidence_skills = evidence["aggregated_skill_scores"]
+    evidence_skills = evidence.get("aggregated_skill_scores", {})
 
     fraud_risk = 0
     missing_skills = []
@@ -87,11 +89,31 @@ def authenticity_agent(data: dict):
     else:
         trust_level = "Low"
 
+    code = data.get("code", "")
+    if isinstance(code, list):
+        code = code[0] if code else ""
+
+    if evidence_skills:
+        evidence_score = sum(evidence_skills.values()) / len(evidence_skills)
+    else:
+        evidence_score = 0.7
+
+    logic = evaluate_authenticity({
+        "code": code or " ",
+        "evidence_score": evidence_score,
+        "skill_test_score": 0.7,
+    })
+
     return {
         "authenticity_score": round(authenticity_score, 2),
         "fraud_flag": fraud_flag,
         "missing_skills": missing_skills,
         "trust_level": trust_level,
+        "trust_score": logic["trust_score"],
+        "risk_level": logic["risk_level"],
+        "semantic_similarity": logic.get("semantic_similarity"),
+        "flags": [],
+        "recommendation": logic.get("reason", "Needs further review"),
     }
 
 
