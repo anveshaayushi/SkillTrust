@@ -2,9 +2,7 @@ import json
 
 from profile_agent import run_profile_agent
 from evidence_agent import run_evidence_agent
-
-# TEMP: comment skill testing until pipeline works reliably
-# from skill_testing_agent import run_agent
+from skill_testing_agent import run_agent, TASK_BANK
 
 
 def _resume_payload(user_input: dict) -> dict:
@@ -13,6 +11,37 @@ def _resume_payload(user_input: dict) -> dict:
         "resume_text": user_input.get("resume_text")
         or user_input.get("resume", ""),
     }
+
+
+def _skill_for_agent(label: str) -> str:
+
+    s = (label or "").strip().lower()
+
+    if s in TASK_BANK:
+
+        return s
+
+    if "sql" in s:
+
+        return "sql"
+
+    if "machine" in s or "tensorflow" in s or "pytorch" in s or s == "ml":
+
+        return "ml"
+
+    if "react" in s or "next" in s:
+
+        return "react"
+
+    if "fastapi" in s:
+
+        return "fastapi"
+
+    if "python" in s or "django" in s or "flask" in s:
+
+        return "python"
+
+    return "python"
 
 
 def orchestrate(user_input):
@@ -46,9 +75,24 @@ def orchestrate(user_input):
 
         print("\nCALLING EVIDENCE AGENT...")
 
-        evidence_data = run_evidence_agent(
-            resume_payload["resume_text"]
-        )
+        try:
+
+            evidence_data = run_evidence_agent(
+                resume_payload["resume_text"]
+            )
+
+        except Exception as ev_err:
+
+            print("\nEVIDENCE AGENT FAILED:", ev_err)
+
+            evidence_data = {
+                "github_links": [],
+                "linkedin_links": [],
+                "project_snippets": [],
+                "aggregated_skill_scores": {},
+                "repositories": [],
+                "error": str(ev_err),
+            }
 
         print("EVIDENCE DONE")
 
@@ -125,44 +169,52 @@ def orchestrate(user_input):
         # SKILL TESTING
         # ==============================
 
-        print("\nSKILL TESTING TEMPORARILY DISABLED")
-
-        skill_results = [
-            {
-                "status": "temporarily_disabled_for_debugging"
-            }
-        ]
-
-        # Uncomment later after pipeline works
-        """
         skill_results = []
 
-        for skill in profile_data.get("skills", []):
+        for skill in profile_data.get("skills", [])[:12]:
 
-            print(f"RUNNING SKILL TEST FOR {skill}")
+            try:
 
-            evidence_score = evidence_data.get(
-                "aggregated_skill_scores",
-                {}
-            ).get(skill, 0.5)
+                evidence_score = evidence_data.get(
+                    "aggregated_skill_scores",
+                    {},
+                ).get(skill, 0.5)
 
-            result = run_agent(
-                skill=skill,
-                claimed_level="intermediate",
-                evidence=evidence_score,
-                answer="sample answer for demo",
-            )
+                print(f"RUNNING SKILL TEST FOR {skill}")
 
-            skill_results.append({
-                skill: result
-            })
-        """
+                result = run_agent(
+                    skill=_skill_for_agent(skill),
+                    claimed_level="intermediate",
+                    evidence=evidence_score,
+                    answer="sample answer for demo",
+                )
+
+                skill_results.append({skill: result})
+
+            except Exception as se:
+
+                print(f"SKILL TEST FAILED FOR {skill}:", se)
+
+                skill_results.append({
+                    skill: {
+                        "status": "error",
+                        "error": str(se),
+                    }
+                })
+
+        print("\nSKILL TESTING COMPLETE")
+
+        print(json.dumps(
+            skill_results,
+            indent=2
+        ))
 
         # ==============================
         # FINAL REPORT
         # ==============================
 
         final_report = {
+            "success": True,
             "profile": profile_data,
             "evidence": evidence_data,
             "authenticity": authenticity_data,
@@ -185,13 +237,10 @@ def orchestrate(user_input):
         print(str(e))
 
         return {
-            "error": str(e)
+            "success": False,
+            "error": str(e),
         }
 
-
-# ==============================
-# TEST RUN
-# ==============================
 
 if __name__ == "__main__":
 

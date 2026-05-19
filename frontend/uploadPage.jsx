@@ -28,41 +28,63 @@ async function simulateUpload(
 
     onProgress(15)
 
-    // Read uploaded file
-    const text = await file.text()
+    const formData = new FormData()
+
+    formData.append(
+      "resume",
+      file
+    )
 
     onProgress(40)
 
-    // Call backend
     const response = await fetch(
       "http://127.0.0.1:8000/analyze",
       {
         method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-        },
-
-        body: JSON.stringify({
-          resume_text: text,
-        }),
+        body: formData,
       }
     )
 
-    onProgress(75)
+    onProgress(65)
 
-    // ========================================
-    // BACKEND ERROR HANDLING
-    // ========================================
+    const raw = await response.text()
 
-    if (!response.ok) {
+    let data
+
+    try {
+
+      data = JSON.parse(raw)
+
+    } catch {
 
       throw new Error(
-        "Backend request failed"
+        "Server returned invalid JSON"
       )
     }
 
-    const data = await response.json()
+    if (!response.ok) {
+
+      const msg =
+
+        data?.error?.message ||
+
+        data?.detail ||
+
+        `Backend request failed (${response.status})`
+
+      throw new Error(msg)
+    }
+
+    if (data.success === false) {
+
+      const msg =
+
+        data?.error?.message ||
+
+        "Analysis failed"
+
+      throw new Error(msg)
+    }
 
     console.log("BACKEND RESPONSE:")
     console.log(data)
@@ -131,6 +153,8 @@ function FileItem({
 
       <div style={{ flex: 1 }}>
 
+        {/* FILE NAME */}
+
         <div
           style={{
             fontSize: 13,
@@ -156,6 +180,7 @@ function FileItem({
 
         </div>
 
+
         {/* PROGRESS BAR */}
 
         {status === 'uploading' && (
@@ -163,11 +188,8 @@ function FileItem({
           <div
             style={{
               height: 4,
-
               background: '#252A35',
-
               borderRadius: 2,
-
               overflow: 'hidden',
             }}
           >
@@ -175,21 +197,17 @@ function FileItem({
             <div
               style={{
                 height: '100%',
-
                 width: `${progress}%`,
-
                 background:
                   'linear-gradient(90deg, #6C63FF, #00D4AA)',
-
                 borderRadius: 2,
-
-                transition:
-                  'width 0.2s ease',
+                transition: 'width 0.2s ease',
               }}
             />
 
           </div>
         )}
+
 
         {/* STATUS */}
 
@@ -218,6 +236,7 @@ function FileItem({
         )}
 
       </div>
+
 
       {/* ICONS */}
 
@@ -392,6 +411,7 @@ export default function UploadPage() {
     accept: {
       'application/pdf': ['.pdf'],
       'text/plain': ['.txt'],
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
     },
 
     maxSize: 10 * 1024 * 1024,
@@ -446,7 +466,7 @@ export default function UploadPage() {
           marginBottom: 32,
         }}
       >
-        Upload PDF or TXT resumes.
+        Upload PDF, TXT, or DOCX resumes.
         Each file triggers the full
         AI evaluation pipeline.
       </p>
@@ -571,7 +591,7 @@ export default function UploadPage() {
             click to browse
           </span>
 
-          &nbsp;· PDF or TXT · max 10MB each
+          &nbsp;· PDF, TXT, or DOCX · max 10MB each
 
         </div>
 
@@ -613,13 +633,11 @@ export default function UploadPage() {
           ))}
 
 
-          {/* ======================================== */}
           {/* ANALYSIS RESULTS */}
-          {/* ======================================== */}
 
           {files.map((f, idx) => (
 
-            f.result && (
+            f.result && (f.result.authenticity || f.result.profile) && (
 
               <div
                 key={idx}
@@ -665,13 +683,13 @@ export default function UploadPage() {
 
                     background:
 
-                      f.result.authenticity
-                        .trust_level === 'High'
+                      f.result?.authenticity
+                        ?.trust_level === 'High'
 
                         ? 'rgba(0,212,170,0.15)'
 
-                        : f.result.authenticity
-                            .trust_level === 'Medium'
+                        : f.result?.authenticity
+                            ?.trust_level === 'Medium'
 
                         ? 'rgba(255,184,0,0.15)'
 
@@ -679,13 +697,13 @@ export default function UploadPage() {
 
                     color:
 
-                      f.result.authenticity
-                        .trust_level === 'High'
+                      f.result?.authenticity
+                        ?.trust_level === 'High'
 
                         ? '#00D4AA'
 
-                        : f.result.authenticity
-                            .trust_level === 'Medium'
+                        : f.result?.authenticity
+                            ?.trust_level === 'Medium'
 
                         ? '#FFB800'
 
@@ -700,8 +718,8 @@ export default function UploadPage() {
                 >
 
                   {
-                    f.result.authenticity
-                      .trust_level
+                    f.result?.authenticity
+                      ?.trust_level || 'Unknown'
                   } Trust
 
                 </div>
@@ -716,8 +734,8 @@ export default function UploadPage() {
                   </strong>{" "}
 
                   {
-                    f.result.authenticity
-                      .authenticity_score
+                    f.result?.authenticity
+                      ?.authenticity_score
                   }
 
                 </p>
@@ -745,8 +763,10 @@ export default function UploadPage() {
                     style={{
                       width:
                         `${
-                          f.result.authenticity
-                            .authenticity_score * 100
+                          (
+                            f.result?.authenticity
+                              ?.authenticity_score || 0
+                          ) * 100
                         }%`,
 
                       height: '100%',
@@ -768,8 +788,8 @@ export default function UploadPage() {
                   </strong>{" "}
 
                   {
-                    f.result.authenticity
-                      .fraud_flag
+                    f.result?.authenticity
+                      ?.fraud_flag
 
                       ? "YES"
 
@@ -797,7 +817,7 @@ export default function UploadPage() {
                   }}
                 >
 
-                  {f.result.profile.skills.map(
+                  {(f.result?.profile?.skills || []).map(
                     (skill, i) => (
 
                       <li key={i}>
@@ -828,16 +848,161 @@ export default function UploadPage() {
                   }}
                 >
 
-                  {f.result.authenticity
-                    .missing_skills
-                    .map((skill, i) => (
+                  {(f.result?.authenticity?.missing_skills || []).map(
+                    (skill, i) => (
 
                       <li key={i}>
                         {skill}
                       </li>
-                    ))}
+                    )
+                  )}
 
                 </ul>
+
+
+                {/* EVIDENCE SUMMARY */}
+
+                {(f.result?.evidence?.github_links?.length > 0 ||
+
+                  f.result?.evidence?.linkedin_links?.length > 0 ||
+
+                  Object.keys(f.result?.evidence?.aggregated_skill_scores || {}).length > 0 ||
+
+                  (f.result?.evidence?.project_snippets || []).length > 0) && (
+
+                  <div style={{ marginTop: 16 }}>
+
+                    <p
+                      style={{
+                        fontWeight: 700,
+                        marginBottom: 8,
+                      }}
+                    >
+                      Evidence
+                    </p>
+
+                    {(f.result?.evidence?.github_links || []).length > 0 && (
+
+                      <p style={{ fontSize: 12, color: '#6B7280', marginBottom: 4 }}>
+
+                        <strong style={{ color: '#C9D1D9' }}>GitHub:</strong>{" "}
+
+                        {(f.result.evidence.github_links || []).join(", ")}
+
+                      </p>
+
+                    )}
+
+                    {(f.result?.evidence?.linkedin_links || []).length > 0 && (
+
+                      <p style={{ fontSize: 12, color: '#6B7280', marginBottom: 4 }}>
+
+                        <strong style={{ color: '#C9D1D9' }}>LinkedIn:</strong>{" "}
+
+                        {(f.result.evidence.linkedin_links || []).join(", ")}
+
+                      </p>
+
+                    )}
+
+                    {Object.keys(f.result?.evidence?.aggregated_skill_scores || {}).length > 0 && (
+
+                      <p style={{ fontSize: 12, color: '#6B7280', marginBottom: 4 }}>
+
+                        <strong style={{ color: '#C9D1D9' }}>Evidence skills:</strong>{" "}
+
+                        {JSON.stringify(f.result.evidence.aggregated_skill_scores)}
+
+                      </p>
+
+                    )}
+
+                    {f.result?.evidence?.error && (
+
+                      <p style={{ fontSize: 12, color: '#FF6B35' }}>
+
+                        Evidence note: {String(f.result.evidence.error)}
+
+                      </p>
+
+                    )}
+
+                  </div>
+
+                )}
+
+
+                {/* SKILL TESTING */}
+
+                {Array.isArray(f.result?.skill_testing) && f.result.skill_testing.length > 0 && (
+
+                  <div style={{ marginTop: 16 }}>
+
+                    <p
+                      style={{
+                        fontWeight: 700,
+                        marginBottom: 8,
+                      }}
+                    >
+                      Skill checks
+                    </p>
+
+                    <ul
+                      style={{
+                        paddingLeft: 20,
+                        color: '#6B7280',
+                        fontSize: 12,
+                        fontFamily: 'JetBrains Mono, monospace',
+                      }}
+                    >
+
+                      {f.result.skill_testing.map((entry, si) => {
+
+                        if (!entry || typeof entry !== "object") {
+
+                          return (
+
+                            <li key={si} style={{ marginBottom: 6 }}>
+
+                              (invalid entry)
+
+                            </li>
+
+                          )
+
+                        }
+
+                        const key = Object.keys(entry)[0] || `item-${si}`
+
+                        const val = entry[key]
+
+                        return (
+
+                          <li key={si} style={{ marginBottom: 6 }}>
+
+                            {key}:{" "}
+
+                            {typeof val === "object" && val !== null
+
+                              ? (val?.status === "error"
+
+                                  ? `Error — ${val?.error || "unknown"}`
+
+                                  : "Completed")
+
+                              : String(val)}
+
+                          </li>
+
+                        )
+
+                      })}
+
+                    </ul>
+
+                  </div>
+
+                )}
 
               </div>
 
@@ -845,132 +1010,50 @@ export default function UploadPage() {
 
           ))}
 
+
+          {allDone && (
+
+            <button
+
+              onClick={() => nav('/')}
+
+              style={{
+                width: '100%',
+
+                marginTop: 20,
+
+                padding: '14px',
+
+                background:
+                  'linear-gradient(135deg, #6C63FF, #00D4AA)',
+
+                border: 'none',
+
+                borderRadius: 12,
+
+                cursor: 'pointer',
+
+                fontFamily:
+                  'Syne, sans-serif',
+
+                fontWeight: 700,
+
+                fontSize: 15,
+
+                color: '#fff',
+
+                letterSpacing: '0.02em',
+              }}
+            >
+
+              View Dashboard →
+
+            </button>
+
+          )}
+
         </div>
       )}
-
-
-      {/* ACTION BUTTON */}
-
-      {allDone && (
-
-        <button
-
-          onClick={() => nav('/')}
-
-          style={{
-            width: '100%',
-
-            padding: '14px',
-
-            background:
-              'linear-gradient(135deg, #6C63FF, #00D4AA)',
-
-            border: 'none',
-
-            borderRadius: 12,
-
-            cursor: 'pointer',
-
-            fontFamily:
-              'Syne, sans-serif',
-
-            fontWeight: 700,
-
-            fontSize: 15,
-
-            color: '#fff',
-
-            letterSpacing: '0.02em',
-          }}
-        >
-
-          View Dashboard →
-
-        </button>
-      )}
-
-
-      {/* INFO CARDS */}
-
-      <div
-        style={{
-          marginTop: 32,
-
-          display: 'grid',
-
-          gridTemplateColumns:
-            '1fr 1fr',
-
-          gap: 14,
-        }}
-      >
-
-        {[
-          {
-            label: 'Profile Agent',
-            desc: 'Extracts skills + confidence'
-          },
-
-          {
-            label: 'Authenticity Agent',
-            desc: 'Fraud + trust scoring'
-          },
-
-          {
-            label: 'Evidence Agent',
-            desc: 'Evidence verification'
-          },
-
-          {
-            label: 'Resume Engine',
-            desc: 'Final AI evaluation report'
-          },
-
-        ].map(card => (
-
-          <div
-            key={card.label}
-
-            style={{
-              padding: '14px 16px',
-
-              background: '#181C24',
-
-              border:
-                '1px solid #252A35',
-
-              borderRadius: 10,
-            }}
-          >
-
-            <div
-              style={{
-                fontSize: 12,
-
-                fontWeight: 600,
-
-                color: '#6C63FF',
-
-                marginBottom: 4,
-              }}
-            >
-              {card.label}
-            </div>
-
-            <div
-              style={{
-                fontSize: 12,
-                color: '#6B7280',
-              }}
-            >
-              {card.desc}
-            </div>
-
-          </div>
-
-        ))}
-
-      </div>
 
     </div>
   )

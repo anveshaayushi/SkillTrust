@@ -1,14 +1,21 @@
-import os
-import tempfile
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException, Request, UploadFile
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
 
-from evidence_agent import run_evidence_agent
-from profile_agent import extract_text, run_profile_agent
+import tempfile
+import os
+import traceback
+
 from orchestrator import orchestrate
+from profile_agent import extract_text
 
 app = FastAPI()
+
+
+# =========================
+# CORS
+# =========================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,138 +24,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================
-# REQUEST MODEL
-# =========================
 
-class AnalyzeRequest(BaseModel):
-    resume_text: str
+def _error_payload(code: str, message: str, status: int):
 
-
-# =========================
-# HELPER FUNCTION
-# =========================
-
-async def _resume_text_from_request(request: Request) -> str:
-
-    content_type = request.headers.get("content-type", "")
-
-    # JSON input
-    if "application/json" in content_type:
-
-        data = await request.json()
-
-        text = data.get("resume_text") or data.get("resume")
-
-        if not text:
-            raise HTTPException(
-                status_code=400,
-                detail="resume_text or resume required in JSON body",
-            )
-
-        return text
-
-    # File upload input
-    if "multipart/form-data" in content_type:
-
-        form = await request.form()
-
-        resume: UploadFile = form.get("resume")
-
-        if resume is None:
-            raise HTTPException(
-                status_code=400,
-                detail="resume file required",
-            )
-
-        suffix = os.path.splitext(resume.filename)[1]
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=suffix
-        ) as temp_file:
-
-            temp_file.write(await resume.read())
-            temp_path = temp_file.name
-
-        try:
-            return extract_text(temp_path)
-
-        finally:
-            os.remove(temp_path)
-
-    raise HTTPException(
-        status_code=415,
-        detail="Use application/json or multipart/form-data",
+    return JSONResponse(
+        status_code=status,
+        content={
+            "success": False,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        },
     )
 
 
 # =========================
-# ROUTES
+# ROOT
 # =========================
 
 @app.get("/")
 def home():
 
     return {
-        "message": "SkillTrust API is running"
-    }
-
-
-@app.post("/profile")
-async def profile_agent_endpoint(request: Request):
-
-    resume_text = await _resume_text_from_request(request)
-
-    result = run_profile_agent(resume_text)
-
-    return result.model_dump()
-
-
-@app.post("/evidence")
-async def evidence_agent_endpoint(request: Request):
-
-    resume_text = await _resume_text_from_request(request)
-
-    return run_evidence_agent(resume_text)
-
-
-@app.post("/authenticity")
-def authenticity_agent(data: dict):
-
-    profile = data["profile"]
-    evidence = data["evidence"]
-
-    claimed_skills = profile["skills"]
-    evidence_skills = evidence.get("aggregated_skill_scores", {})
-
-    fraud_risk = 0
-    missing_skills = []
-
-    for skill in claimed_skills:
-
-        if skill not in evidence_skills:
-            fraud_risk += 0.2
-            missing_skills.append(skill)
-
-    authenticity_score = max(0, 1 - fraud_risk)
-
-    fraud_flag = fraud_risk > 0.3
-
-    if authenticity_score > 0.8:
-        trust_level = "High"
-
-    elif authenticity_score > 0.5:
-        trust_level = "Medium"
-
-    else:
-        trust_level = "Low"
-
-    return {
-        "authenticity_score": round(authenticity_score, 2),
-        "fraud_flag": fraud_flag,
-        "missing_skills": missing_skills,
-        "trust_level": trust_level,
+        "status": "Backend running",
+        "success": True,
     }
 
 
@@ -157,17 +57,122 @@ def authenticity_agent(data: dict):
 # =========================
 
 @app.post("/analyze")
-async def analyze(data: AnalyzeRequest):
+async def analyze(
+    resume: UploadFile = File(...)
+):
 
-    result = orchestrate({
-        "resume_text": data.resume_text
-    })
+    temp_path = None
 
-    return result
+    try:
+
+        print("\n========== FILE RECEIVED ==========")
+        print("Filename:", resume.filename)
+
+        suffix = os.path.splitext(
+            resume.filename or ""
+        )[1].lower()
+
+        if suffix not in (".pdf", ".txt", ".docx"):
+
+            return _error_payload(
+                "UNSUPPORTED_FILE_TYPE",
+                "Only PDF, TXT, and DOCX files are supported.",
+                400,
+            )
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as temp_file:
+
+            contents = await resume.read()
+
+            temp_file.write(contents)
+
+            temp_path = temp_file.name
+
+        print("TEMP FILE:", temp_path)
+
+        resume_text = extract_text(
+            temp_path
+        )
+
+        print("\n========== EXTRACTED TEXT (preview) ==========")
+        print((resume_text or "")[:1000])
+
+        if not (resume_text or "").strip():
+
+            return _error_payload(
+                "EMPTY_RESUME",
+                "No text could be extracted from the file.",
+                400,
+            )
+
+        result = orchestrate({
+            "resume_text": resume_text
+        })
+
+        if not isinstance(result, dict):
+
+            return _error_payload(
+                "INVALID_PIPELINE_RESULT",
+                "Orchestrator returned an unexpected result.",
+                502,
+            )
+
+        if result.get("success") is False or (
+
+            result.get("error") and not result.get("profile")
+
+        ):
+
+            return _error_payload(
+                "PIPELINE_ERROR",
+                str(result.get("error", "Unknown orchestration error")),
+                502,
+            )
+
+        result["success"] = True
+
+        print("\n========== PIPELINE SUCCESS ==========")
+
+        return result
+
+    except ValueError as e:
+
+        return _error_payload(
+            "BAD_FILE",
+            str(e),
+            400,
+        )
+
+    except Exception as e:
+
+        print("\n========== BACKEND ERROR ==========")
+
+        traceback.print_exc()
+
+        return _error_payload(
+            "INTERNAL_ERROR",
+            str(e),
+            500,
+        )
+
+    finally:
+
+        if temp_path and os.path.exists(temp_path):
+
+            try:
+
+                os.remove(temp_path)
+
+            except OSError:
+
+                pass
 
 
 # =========================
-# RUN SERVER
+# START SERVER
 # =========================
 
 if __name__ == "__main__":
@@ -175,7 +180,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app,
+        "auth_api:app",
         host="127.0.0.1",
         port=8000,
         reload=True

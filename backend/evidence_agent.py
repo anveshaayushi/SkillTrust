@@ -3,279 +3,451 @@ import requests
 from collections import defaultdict
 
 
-# =========================
+# ========================================
 # GITHUB LINK EXTRACTION
-# =========================
+# ========================================
 
-def extract_github_links(text: str):
+def extract_github_links(text):
 
-    pattern = r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+    """
+    Collect GitHub profile and repo URLs:
+    - https://github.com/user/repo
+    - www.github.com/...
+    - github.com/... without scheme
+    """
 
-    matches = re.findall(pattern, text)
+    if not text:
 
-    clean_links = []
+        return []
 
-    for link in matches:
+    seen = set()
 
-        cleaned = link.rstrip(").,]}>")
+    patterns = [
 
-        if cleaned not in clean_links:
-            clean_links.append(cleaned)
+        r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?/?",
 
-    return clean_links
+        r"(?<![\w/])github\.com/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?/?",
+
+    ]
+
+    for pattern in patterns:
+
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+
+            raw = match.group(0).strip()
+
+            raw = raw.rstrip(").,;]>'\"")
+
+            if not raw.startswith("http"):
+
+                raw = "https://" + raw.lstrip("/")
+
+            raw = re.sub(
+                r"^https?://www\.github\.com/",
+                "https://github.com/",
+                raw,
+                flags=re.I,
+            )
+
+            raw = raw.rstrip("/")
+
+            if "github.com/" in raw.lower():
+
+                seen.add(raw)
+
+    return list(seen)
 
 
-# =========================
-# FETCH README
-# =========================
+# ========================================
+# LINKEDIN LINK EXTRACTION
+# ========================================
 
-def fetch_readme(owner: str, repo: str):
+def extract_linkedin_links(text):
 
-    url = f"https://api.github.com/repos/{owner}/{repo}/readme"
+    if not text:
 
-    headers = {
-        "Accept": "application/vnd.github.raw"
-    }
+        return []
+
+    seen = set()
+
+    pattern = (
+        r"https?://(?:[\w-]+\.)?linkedin\.com/"
+        r"(?:in|pub)/[A-Za-z0-9_-]+/?"
+    )
+
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+
+        url = match.group(0).strip().rstrip("/)\"'")
+
+        seen.add(url)
+
+    return list(seen)
+
+
+# ========================================
+# PROJECT / TECH SNIPPETS (resume body)
+# ========================================
+
+def extract_project_snippets(text, max_snippets=8):
+
+    """
+    Pull bullet lines after common project/experience headers
+    to capture technologies near project descriptions.
+    """
+
+    if not text:
+
+        return []
+
+    lines = [ln.rstrip() for ln in text.splitlines()]
+
+    bullets = []
+
+    header_re = re.compile(
+
+        r"(?i)^(projects?|project experience|"
+        r"selected work|portfolio|relevant experience|"
+        r"professional experience|work experience)\s*:?\s*$"
+
+    )
+
+    for i, line in enumerate(lines):
+
+        if header_re.match(line.strip()):
+
+            for j in range(i + 1, min(i + 25, len(lines))):
+
+                ln = lines[j].strip()
+
+                if not ln:
+
+                    continue
+
+                if ln.startswith(("-", "•", "*", "·")) or re.match(r"^\d+[\).\s]", ln):
+
+                    bullets.append(ln[:400])
+
+                    if len(bullets) >= max_snippets:
+
+                        break
+
+            if bullets:
+
+                break
+
+    return bullets[:max_snippets]
+
+
+def skills_from_resume_context(resume_text, snippets):
+
+    """
+    Lightweight keyword scan over full resume + project bullets
+    (complements GitHub repo analysis).
+    """
+
+    block = (resume_text or "") + "\n" + "\n".join(snippets or [])
+
+    block_lower = block.lower()
+
+    scores = defaultdict(float)
+
+    for skill, keywords in SKILL_KEYWORDS.items():
+
+        for keyword in keywords:
+
+            if keyword.lower() in block_lower:
+
+                scores[skill] = max(scores[skill], 0.35)
+
+                break
+
+    return dict(scores)
+
+
+# ========================================
+# SKILL KEYWORDS
+# ========================================
+
+SKILL_KEYWORDS = {
+    "React": ["react", "nextjs", "next.js"],
+    "Python": ["python", "fastapi", "flask", "django"],
+    "JavaScript": ["javascript", "js", "node"],
+    "TypeScript": ["typescript", "ts"],
+    "SQL": ["sql", "postgres", "mysql", "sqlite"],
+    "Machine Learning": ["tensorflow", "pytorch", "sklearn"],
+    "FastAPI": ["fastapi"],
+}
+
+
+# ========================================
+# GITHUB USERNAME EXTRACTION
+# ========================================
+
+def extract_username(github_url):
+
+    cleaned = github_url.strip().rstrip("/")
+
+    cleaned = re.sub(
+
+        r"^https?://(www\.)?github\.com/",
+
+        "",
+
+        cleaned,
+
+        flags=re.IGNORECASE,
+
+    )
+
+    cleaned = cleaned.strip("/")
+
+    username = cleaned.split("/")[0]
+
+    return username
+
+
+# ========================================
+# FETCH USER REPOS
+# ========================================
+
+def fetch_repositories(username):
 
     try:
 
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=15
-        )
-
-        print(f"README STATUS ({repo}):", response.status_code)
-
-        if response.status_code == 200:
-            return response.text
-
-        return ""
-
-    except Exception as e:
-
-        print("README ERROR:", e)
-
-        return ""
-
-
-# =========================
-# FETCH REPO FILE TREE
-# =========================
-
-def fetch_repo_tree(owner: str, repo: str):
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1"
-
-    try:
+        url = f"https://api.github.com/users/{username}/repos"
 
         response = requests.get(
             url,
             timeout=15
         )
-
-        print(f"TREE STATUS ({repo}):", response.status_code)
 
         if response.status_code != 200:
+
+            print(
+                f"GitHub API failed for {username}"
+            )
+
             return []
 
-        data = response.json()
+        repos = response.json()
 
-        files = []
-
-        for item in data.get("tree", []):
-
-            path = item.get("path", "")
-
-            files.append(path.lower())
-
-        return files
+        return repos
 
     except Exception as e:
 
-        print("TREE ERROR:", e)
+        print(
+            "ERROR FETCHING REPOS:"
+        )
+
+        print(str(e))
 
         return []
 
 
-# =========================
-# TECH STACK DETECTION
-# =========================
+# ========================================
+# ANALYZE REPOS
+# ========================================
 
-TECH_KEYWORDS = {
-    "react": ["react", "jsx", "tsx"],
-    "python": ["python", ".py", "fastapi", "flask", "django"],
-    "fastapi": ["fastapi"],
-    "docker": ["docker", "dockerfile"],
-    "sql": ["sql", "postgres", "mysql", "sqlite"],
-    "nodejs": ["node", "express", "package.json"],
-    "mongodb": ["mongodb", "mongoose"],
-    "tensorflow": ["tensorflow"],
-    "pytorch": ["pytorch"],
-    "java": [".java", "spring"],
-}
+def analyze_repositories(repos):
+
+    skill_scores = defaultdict(float)
+
+    repo_summaries = []
+
+    for repo in repos:
+
+        name = (
+            repo.get("name", "")
+            or ""
+        ).lower()
+
+        description = (
+            repo.get("description", "")
+            or ""
+        ).lower()
+
+        combined_text = (
+            name + " " + description
+        )
+
+        matched_skills = []
+
+        for skill, keywords in SKILL_KEYWORDS.items():
+
+            for keyword in keywords:
+
+                if keyword.lower() in combined_text:
+
+                    skill_scores[skill] += 1
+
+                    matched_skills.append(skill)
+
+                    break
+
+        repo_summaries.append({
+
+            "repo_name":
+                repo.get("name"),
+
+            "description":
+                repo.get("description"),
+
+            "stars":
+                repo.get("stargazers_count"),
+
+            "matched_skills":
+                matched_skills,
+        })
+
+    return {
+        "aggregated_skill_scores":
+            dict(skill_scores),
+
+        "repositories":
+            repo_summaries,
+    }
 
 
-# =========================
-# DETECT SKILLS FROM REPO
-# =========================
+# ========================================
+# MAIN EVIDENCE AGENT
+# ========================================
 
-def detect_skills(readme: str, files: list):
+def run_evidence_agent(resume_text):
 
-    detected = defaultdict(float)
-
-    combined_text = (
-        readme.lower()
-        + " "
-        + " ".join(files)
+    print(
+        "\n========== EVIDENCE AGENT =========="
     )
 
-    for skill, keywords in TECH_KEYWORDS.items():
-
-        score = 0
-
-        for keyword in keywords:
-
-            if keyword in combined_text:
-                score += 1
-
-        if score > 0:
-
-            confidence = min(
-                round(score / len(keywords), 2),
-                1.0
-            )
-
-            detected[skill] = confidence
-
-    return dict(detected)
-
-
-# =========================
-# MAIN EVIDENCE AGENT
-# =========================
-
-def run_evidence_agent(resume_text: str):
-
-    print("\n========== EVIDENCE AGENT ==========")
+    resume_text = resume_text or ""
 
     github_links = extract_github_links(
         resume_text
     )
 
+    linkedin_links = extract_linkedin_links(
+        resume_text
+    )
+
+    project_snippets = extract_project_snippets(
+        resume_text
+    )
+
+    resume_skill_hints = skills_from_resume_context(
+        resume_text,
+        project_snippets,
+    )
+
     print("\nEXTRACTED GITHUB LINKS:")
     print(github_links)
 
-    projects = []
+    print("\nEXTRACTED LINKEDIN LINKS:")
+    print(linkedin_links)
 
-    aggregated_skill_scores = defaultdict(float)
+    all_repositories = []
 
-    aggregated_flags = []
+    aggregated_scores = defaultdict(float)
 
-    # =====================
-    # NO LINKS FOUND
-    # =====================
+    for skill, score in resume_skill_hints.items():
 
-    if not github_links:
-
-        print("\nNO GITHUB LINKS FOUND")
-
-        return {
-            "projects": [],
-            "aggregated_skill_scores": {},
-            "aggregated_flags": [
-                "No GitHub repositories detected"
-            ]
-        }
-
-    # =====================
-    # PROCESS EACH REPO
-    # =====================
+        aggregated_scores[skill] += score
 
     for link in github_links:
 
-        try:
+        print(
+            f"\nPROCESSING: {link}"
+        )
 
-            repo_path = link.replace(
-                "https://github.com/",
-                ""
-            )
+        username = extract_username(
+            link
+        )
 
-            owner, repo = repo_path.split("/")[:2]
+        print(
+            f"USERNAME: {username}"
+        )
 
-            print(f"\nPROCESSING: {owner}/{repo}")
+        repos = fetch_repositories(
+            username
+        )
 
-            readme = fetch_readme(
-                owner,
-                repo
-            )
+        print(
+            f"REPOS FOUND: {len(repos)}"
+        )
 
-            files = fetch_repo_tree(
-                owner,
-                repo
-            )
+        analysis = analyze_repositories(
+            repos
+        )
 
-            detected_skills = detect_skills(
-                readme,
-                files
-            )
+        all_repositories.extend(
+            analysis["repositories"]
+        )
 
-            print("DETECTED SKILLS:")
-            print(detected_skills)
+        for skill, score in analysis[
+            "aggregated_skill_scores"
+        ].items():
 
-            # aggregate scores
+            aggregated_scores[
+                skill
+            ] += score
 
-            for skill, score in detected_skills.items():
+    final_result = {
 
-                aggregated_skill_scores[skill] = max(
-                    aggregated_skill_scores[skill],
-                    score
-                )
+        "github_links":
+            github_links,
 
-            # repo score
+        "linkedin_links":
+            linkedin_links,
 
-            if detected_skills:
-                repo_score = round(
-                    sum(detected_skills.values())
-                    / len(detected_skills),
-                    2
-                )
-            else:
-                repo_score = 0.0
+        "project_snippets":
+            project_snippets,
 
-            projects.append({
-                "repo": f"{owner}/{repo}",
-                "repo_url": link,
-                "detected_skills": detected_skills,
-                "project_score": repo_score,
-                "repo_quality":
-                    "good"
-                    if repo_score >= 0.5
-                    else "weak"
-            })
+        "aggregated_skill_scores":
+            dict(aggregated_scores),
 
-        except Exception as e:
-
-            print("REPO PROCESS ERROR:", e)
-
-            aggregated_flags.append(
-                f"Failed processing {link}"
-            )
-
-    # =====================
-    # FINAL OUTPUT
-    # =====================
-
-    final_scores = {
-        k: round(v, 2)
-        for k, v in aggregated_skill_scores.items()
+        "repositories":
+            all_repositories,
     }
 
-    print("\nFINAL AGGREGATED SCORES:")
-    print(final_scores)
+    print(
+        "\n========== EVIDENCE COMPLETE =========="
+    )
 
-    return {
-        "projects": projects,
-        "aggregated_skill_scores": final_scores,
-        "aggregated_flags": aggregated_flags,
-    }
+    return final_result
+
+
+# ========================================
+# TEST
+# ========================================
+
+if __name__ == "__main__":
+
+    sample_resume = """
+
+    Jane Doe
+
+    Skills:
+    React, FastAPI, Python
+
+    GitHub:
+    https://github.com/vercel/next.js
+    github.com/openai
+
+    LinkedIn:
+    https://www.linkedin.com/in/janedoe/
+
+    Projects:
+    - Built a FastAPI service with React dashboard
+
+    """
+
+    result = run_evidence_agent(
+        sample_resume
+    )
+
+    import json
+
+    print(
+        json.dumps(
+            result,
+            indent=2
+        )
+    )

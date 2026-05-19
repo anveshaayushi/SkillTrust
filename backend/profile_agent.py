@@ -2,13 +2,12 @@ from fastapi import FastAPI, UploadFile, Request, HTTPException
 import os
 import json
 import tempfile
-import pdfplumber
-import fitz
+import time
 
 from google import genai
 from docx import Document
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from dotenv import load_dotenv
 
 app = FastAPI()
@@ -18,9 +17,9 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-# =========================
+# ========================================
 # SCHEMA
-# =========================
+# ========================================
 
 class SkillConfidence(BaseModel):
     skill: str
@@ -33,82 +32,44 @@ class ProfileOutput(BaseModel):
     confidence: List[SkillConfidence]
 
 
-# =========================
+# ========================================
 # TEXT EXTRACTOR
-# =========================
+# ========================================
 
 def extract_text(file_path: str) -> str:
 
-    # =====================
+    text = ""
+
+    # =========================
     # PDF
-    # =====================
+    # =========================
 
     if file_path.endswith(".pdf"):
 
-        text = ""
+        import fitz  # PyMuPDF
 
-        # ---------- TRY PDFPLUMBER ----------
+        doc = fitz.open(file_path)
 
-        try:
+        for page in doc:
+            text += page.get_text()
 
-            with pdfplumber.open(file_path) as pdf:
+        doc.close()
 
-                for page in pdf.pages:
-
-                    extracted = page.extract_text()
-
-                    if extracted:
-                        text += extracted + "\n"
-
-        except Exception as e:
-
-            print("PDFPLUMBER ERROR:", e)
-
-        # ---------- FALLBACK TO PYMUPDF ----------
-
-        if len(text.strip()) < 100:
-
-            print("\nUSING PYMUPDF FALLBACK...\n")
-
-            try:
-
-                doc = fitz.open(file_path)
-
-                text = ""
-
-                for page in doc:
-                    text += page.get_text()
-
-            except Exception as e:
-
-                print("PYMUPDF ERROR:", e)
-
-        print("\n========== EXTRACTED PDF TEXT ==========\n")
-        print(text[:5000])
-        print("\n=======================================\n")
-
-        if not text.strip():
-
-            raise ValueError("No text found in PDF")
-
-        return text
-
-    # =====================
+    # =========================
     # DOCX
-    # =====================
+    # =========================
 
     elif file_path.endswith(".docx"):
 
         doc = Document(file_path)
 
-        return "\n".join(
-            para.text
-            for para in doc.paragraphs
+        text = "\n".join(
+            [para.text for para in doc.paragraphs]
         )
 
-    # =====================
+    # =========================
     # TXT
-    # =====================
+    # =========================
 
     elif file_path.endswith(".txt"):
 
@@ -118,11 +79,7 @@ def extract_text(file_path: str) -> str:
             encoding="utf-8"
         ) as f:
 
-            return f.read()
-
-    # =====================
-    # INVALID FORMAT
-    # =====================
+            text = f.read()
 
     else:
 
@@ -130,16 +87,126 @@ def extract_text(file_path: str) -> str:
             "Only PDF, DOCX, TXT supported"
         )
 
+    print("\n========== EXTRACTED RESUME TEXT ==========\n")
 
-# =========================
-# CORE AGENT
-# =========================
+    print(text[:5000])
 
-def run_profile_agent(resume_text: str) -> ProfileOutput:
+    return text
 
-    client = genai.Client(
-        api_key=GEMINI_API_KEY
+
+# ========================================
+# FALLBACK (Gemini unavailable)
+# ========================================
+
+def _fallback_profile(resume_text: str) -> ProfileOutput:
+
+    text = (resume_text or "").lower()
+
+    hints = [
+        ("python", "Python"),
+        ("fastapi", "FastAPI"),
+        ("flask", "Flask"),
+        ("django", "Django"),
+        ("react", "React"),
+        ("typescript", "TypeScript"),
+        ("javascript", "JavaScript"),
+        ("node", "JavaScript"),
+        ("sql", "SQL"),
+        ("postgres", "SQL"),
+        ("mysql", "SQL"),
+        ("tensorflow", "Machine Learning"),
+        ("pytorch", "Machine Learning"),
+        ("kubernetes", "Kubernetes"),
+        ("docker", "Docker"),
+        ("aws", "AWS"),
+        ("azure", "Azure"),
+        ("gcp", "GCP"),
+    ]
+
+    skills: list[str] = []
+
+    confidence: list[SkillConfidence] = []
+
+    for needle, label in hints:
+
+        if needle in text and label not in skills:
+
+            skills.append(label)
+
+            confidence.append(
+                SkillConfidence(
+                    skill=label,
+                    score=0.45,
+                )
+            )
+
+    vague: list[str] = []
+
+    if not skills:
+
+        vague.append(
+            "Could not infer skills (LLM unavailable); upload a clearer resume"
+        )
+
+    return ProfileOutput(
+        skills=skills,
+        vague_claims=vague,
+        confidence=confidence,
     )
+
+
+def _is_transient_llm_error(err: Exception) -> bool:
+
+    msg = str(err).lower()
+
+    return any(
+
+        token in msg
+
+        for token in (
+
+            "503",
+
+            "429",
+
+            "unavailable",
+
+            "overloaded",
+
+            "deadline",
+
+            "timed out",
+
+            "timeout",
+
+            "500",
+
+            "resource exhausted",
+
+            "internal error",
+
+            "try again",
+
+        )
+
+    )
+
+
+# ========================================
+# CORE AGENT
+# ========================================
+
+def run_profile_agent(
+    resume_text: str
+) -> ProfileOutput:
+
+    if not (resume_text or "").strip():
+
+        return ProfileOutput(
+            skills=[],
+            vague_claims=["Empty resume text"],
+            confidence=[],
+        )
 
     prompt = f"""
     You are a resume analysis agent.
@@ -150,10 +217,9 @@ def run_profile_agent(resume_text: str) -> ProfileOutput:
     2. Vague or unverifiable claims
     3. Confidence score (0.0 to 1.0) for each skill
 
-    IMPORTANT:
-    - Extract ONLY real technical skills
-    - Ignore soft skills unless vague
-    - Extract GitHub technologies if present
+    Rules:
+    - Specific tools (React, FastAPI, SQL) → higher confidence
+    - Buzzwords with no proof → low confidence
     - Return ONLY valid JSON
 
     Resume:
@@ -177,45 +243,86 @@ def run_profile_agent(resume_text: str) -> ProfileOutput:
     }}
     """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": ProfileOutput,
-        }
+    last_err: Optional[Exception] = None
+
+    for attempt in range(3):
+
+        try:
+
+            client = genai.Client(
+                api_key=GEMINI_API_KEY
+            )
+
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+
+                config={
+                    "response_mime_type":
+                        "application/json",
+
+                    "response_schema":
+                        ProfileOutput,
+                }
+            )
+
+            parsed_json = json.loads(
+                response.text
+            )
+
+            return ProfileOutput(
+                **parsed_json
+            )
+
+        except Exception as e:
+
+            last_err = e
+
+            print(
+                f"\nPROFILE AGENT ATTEMPT {attempt + 1} FAILED: {e}"
+            )
+
+            if _is_transient_llm_error(e) and attempt < 2:
+
+                time.sleep(1.5 * (attempt + 1))
+
+                continue
+
+            break
+
+    print(
+        "\nPROFILE AGENT: using fallback profile after LLM failure:",
+        last_err,
     )
 
-    parsed_json = json.loads(response.text)
-
-    print("\n========== PROFILE OUTPUT ==========\n")
-    print(parsed_json)
-    print("\n===================================\n")
-
-    return ProfileOutput(**parsed_json)
+    return _fallback_profile(resume_text)
 
 
-# =========================
+# ========================================
 # PROFILE ENDPOINT
-# =========================
+# ========================================
 
 @app.post("/profile")
-async def profile_endpoint(request: Request):
+async def profile_endpoint(
+    request: Request
+):
 
     content_type = request.headers.get(
         "content-type",
         ""
     )
 
-    # =====================
+    # =========================
     # JSON MODE
-    # =====================
+    # =========================
 
     if "application/json" in content_type:
 
         data = await request.json()
 
-        resume_text = data.get("resume_text")
+        resume_text = data.get(
+            "resume_text"
+        )
 
         if not resume_text:
 
@@ -230,9 +337,9 @@ async def profile_endpoint(request: Request):
 
         return result.model_dump()
 
-    # =====================
-    # FILE UPLOAD MODE
-    # =====================
+    # =========================
+    # FILE MODE
+    # =========================
 
     elif "multipart/form-data" in content_type:
 
@@ -280,31 +387,33 @@ async def profile_endpoint(request: Request):
 
             os.remove(temp_path)
 
-    # =====================
-    # INVALID CONTENT TYPE
-    # =====================
+    # =========================
+    # INVALID TYPE
+    # =========================
 
     raise HTTPException(
         status_code=415,
-        detail="Use application/json or multipart/form-data"
+        detail=
+            "Use application/json or multipart/form-data"
     )
 
 
-# =========================
-# ROOT ENDPOINT
-# =========================
+# ========================================
+# ROOT
+# ========================================
 
 @app.get("/")
 def home():
 
     return {
-        "message": "Profile Agent API running"
+        "message":
+            "Profile Agent API running"
     }
 
 
-# =========================
-# RUN SERVER
-# =========================
+# ========================================
+# START SERVER
+# ========================================
 
 if __name__ == "__main__":
 
