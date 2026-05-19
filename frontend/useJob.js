@@ -4,7 +4,7 @@
  * Switches to SSE (Server-Sent Events) if available.
  */
 import { useState, useEffect, useRef } from 'react'
-import { getJobStatus, subscribeToJob } from '../api'
+import { getJobStatus, subscribeToJob } from './index'
 
 export function useJob(jobId) {
   const [status, setStatus]   = useState('pending')

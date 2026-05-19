@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Users, AlertTriangle, TrendingUp, Loader2, Upload } from 'lucide-react'
-import ScoreRing from '../components/Shared/ScoreRing'
-import StatusBadge from '../components/Shared/StatusBadge'
-import { MOCK_CANDIDATES, DASHBOARD_STATS } from '../api/mockData'
+import ScoreRing from './scoreRing'
+import StatusBadge from './statusBadge'
+import { MOCK_CANDIDATES, DASHBOARD_STATS } from './mockData'
 
 // Stat card
 function StatCard({ icon: Icon, label, value, sub, color = '#6C63FF' }) {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Activity, RefreshCw } from 'lucide-react'
-import StatusBadge from '../components/Shared/StatusBadge'
-import { MOCK_AGENT_STATUSES } from '../api/mockData'
+import StatusBadge from './statusBadge'
+import { MOCK_AGENT_STATUSES } from './mockData'
 
 function AgentCard({ agent }) {
   return (

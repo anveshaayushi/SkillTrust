@@ -1,11 +1,11 @@
 import React, { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Download, CheckCircle, XCircle, AlertTriangle } from 'lucide-react'
-import ScoreRing from '../components/Shared/ScoreRing'
-import SkillBar from '../components/Shared/SkillBar'
-import StatusBadge from '../components/Shared/StatusBadge'
-import { MOCK_CANDIDATE_DETAIL } from '../api/mockData'
-import { generatePDF } from '../utils/pdfGenerator'
+import ScoreRing from './scoreRing'
+import SkillBar from './skillBar'
+import StatusBadge from './statusBadge'
+import { MOCK_CANDIDATE_DETAIL } from './mockData'
+import { generatePDF } from './pdfGenerator'
 import toast from 'react-hot-toast'
 
 // Section wrapper

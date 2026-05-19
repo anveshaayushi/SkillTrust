@@ -1,10 +1,10 @@
 import React from 'react'
 import { Routes, Route } from 'react-router-dom'
-import Sidebar from './components/Shared/Sidebar'
-import Dashboard from './pages/Dashboard'
-import UploadPage from './pages/UploadPage'
-import CandidateReport from './pages/CandidateReport'
-import AgentStatus from './pages/AgentStatus'
+import Sidebar from './sidebar'
+import Dashboard from './dashboard'
+import UploadPage from './uploadPage'
+import CandidateReport from './candidateReport'
+import AgentStatus from './agentStatus'
 
 export default function App() {
   return (
