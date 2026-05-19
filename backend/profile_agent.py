@@ -1,67 +1,179 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, Request, HTTPException
 import os
 import json
-import re
 import tempfile
-from urllib import response
 import pdfplumber
+import fitz
+
 from google import genai
 from docx import Document
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List
 from dotenv import load_dotenv
+
 app = FastAPI()
+
 load_dotenv()
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# Schema — stays exactly the same
+
+
+# =========================
+# SCHEMA
+# =========================
+
+class SkillConfidence(BaseModel):
+    skill: str
+    score: float
+
+
 class ProfileOutput(BaseModel):
     skills: List[str]
     vague_claims: List[str]
-    confidence: Dict[str, float]
+    confidence: List[SkillConfidence]
 
-# Text extractor — stays exactly the same
+
+# =========================
+# TEXT EXTRACTOR
+# =========================
+
 def extract_text(file_path: str) -> str:
+
+    # =====================
+    # PDF
+    # =====================
+
     if file_path.endswith(".pdf"):
-        with pdfplumber.open(file_path) as pdf:
-            text = ""
-            for page in pdf.pages:
-                text += page.extract_text() or ""
+
+        text = ""
+
+        # ---------- TRY PDFPLUMBER ----------
+
+        try:
+
+            with pdfplumber.open(file_path) as pdf:
+
+                for page in pdf.pages:
+
+                    extracted = page.extract_text()
+
+                    if extracted:
+                        text += extracted + "\n"
+
+        except Exception as e:
+
+            print("PDFPLUMBER ERROR:", e)
+
+        # ---------- FALLBACK TO PYMUPDF ----------
+
+        if len(text.strip()) < 100:
+
+            print("\nUSING PYMUPDF FALLBACK...\n")
+
+            try:
+
+                doc = fitz.open(file_path)
+
+                text = ""
+
+                for page in doc:
+                    text += page.get_text()
+
+            except Exception as e:
+
+                print("PYMUPDF ERROR:", e)
+
+        print("\n========== EXTRACTED PDF TEXT ==========\n")
+        print(text[:5000])
+        print("\n=======================================\n")
+
         if not text.strip():
+
             raise ValueError("No text found in PDF")
+
         return text
+
+    # =====================
+    # DOCX
+    # =====================
+
     elif file_path.endswith(".docx"):
+
         doc = Document(file_path)
-        return "\n".join([para.text for para in doc.paragraphs])
+
+        return "\n".join(
+            para.text
+            for para in doc.paragraphs
+        )
+
+    # =====================
+    # TXT
+    # =====================
+
+    elif file_path.endswith(".txt"):
+
+        with open(
+            file_path,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            return f.read()
+
+    # =====================
+    # INVALID FORMAT
+    # =====================
+
     else:
-        raise ValueError("Only PDF or DOCX supported")
 
-# Core agent — only this function changes
+        raise ValueError(
+            "Only PDF, DOCX, TXT supported"
+        )
 
+
+# =========================
+# CORE AGENT
+# =========================
 
 def run_profile_agent(resume_text: str) -> ProfileOutput:
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+    client = genai.Client(
+        api_key=GEMINI_API_KEY
+    )
 
     prompt = f"""
     You are a resume analysis agent.
 
     Given this resume text, extract:
+
     1. All technical skills mentioned
-    2. Vague or unverifiable claims (like "problem-solving", "ML", "Full-Stack")
+    2. Vague or unverifiable claims
     3. Confidence score (0.0 to 1.0) for each skill
 
-    Rules:
-    - Specific tools (React, FastAPI, SQL) → higher confidence
-    - Buzzwords with no proof → low confidence, add to vague_claims
-    - Return ONLY valid JSON, absolutely no explanation text
+    IMPORTANT:
+    - Extract ONLY real technical skills
+    - Ignore soft skills unless vague
+    - Extract GitHub technologies if present
+    - Return ONLY valid JSON
 
     Resume:
     {resume_text}
 
     Return exactly this format:
+
     {{
-        "skills": ["skill1", "skill2"],
-        "vague_claims": ["vague1"],
-        "confidence": {{"skill1": 0.8, "skill2": 0.4}}
+        "skills": ["React", "Python"],
+        "vague_claims": ["problem-solving"],
+        "confidence": [
+            {{
+                "skill": "React",
+                "score": 0.8
+            }},
+            {{
+                "skill": "Python",
+                "score": 0.6
+            }}
+        ]
     }}
     """
 
@@ -70,30 +182,137 @@ def run_profile_agent(resume_text: str) -> ProfileOutput:
         contents=prompt,
         config={
             "response_mime_type": "application/json",
-            "response_schema": ProfileOutput,  # Gemini validates against your Pydantic model
+            "response_schema": ProfileOutput,
         }
     )
-# response.text is already clean JSON — no regex needed
-    return ProfileOutput(**json.loads(response.text))
 
-# Entry point — stays exactly the same
+    parsed_json = json.loads(response.text)
+
+    print("\n========== PROFILE OUTPUT ==========\n")
+    print(parsed_json)
+    print("\n===================================\n")
+
+    return ProfileOutput(**parsed_json)
+
+
+# =========================
+# PROFILE ENDPOINT
+# =========================
 
 @app.post("/profile")
-async def profile_endpoint(resume: UploadFile = File(...)):
+async def profile_endpoint(request: Request):
 
-    suffix = os.path.splitext(resume.filename)[1]
+    content_type = request.headers.get(
+        "content-type",
+        ""
+    )
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-        temp_file.write(await resume.read())
-        temp_path = temp_file.name
+    # =====================
+    # JSON MODE
+    # =====================
 
-    try:
-        resume_text = extract_text(temp_path)
+    if "application/json" in content_type:
 
-        result = run_profile_agent(resume_text)
+        data = await request.json()
+
+        resume_text = data.get("resume_text")
+
+        if not resume_text:
+
+            raise HTTPException(
+                status_code=400,
+                detail="resume_text required"
+            )
+
+        result = run_profile_agent(
+            resume_text
+        )
 
         return result.model_dump()
 
-    finally:
-        os.remove(temp_path)
+    # =====================
+    # FILE UPLOAD MODE
+    # =====================
 
+    elif "multipart/form-data" in content_type:
+
+        form = await request.form()
+
+        resume: UploadFile = form.get(
+            "resume"
+        )
+
+        if resume is None:
+
+            raise HTTPException(
+                status_code=400,
+                detail="resume file required"
+            )
+
+        suffix = os.path.splitext(
+            resume.filename
+        )[1]
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as temp_file:
+
+            temp_file.write(
+                await resume.read()
+            )
+
+            temp_path = temp_file.name
+
+        try:
+
+            resume_text = extract_text(
+                temp_path
+            )
+
+            result = run_profile_agent(
+                resume_text
+            )
+
+            return result.model_dump()
+
+        finally:
+
+            os.remove(temp_path)
+
+    # =====================
+    # INVALID CONTENT TYPE
+    # =====================
+
+    raise HTTPException(
+        status_code=415,
+        detail="Use application/json or multipart/form-data"
+    )
+
+
+# =========================
+# ROOT ENDPOINT
+# =========================
+
+@app.get("/")
+def home():
+
+    return {
+        "message": "Profile Agent API running"
+    }
+
+
+# =========================
+# RUN SERVER
+# =========================
+
+if __name__ == "__main__":
+
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        reload=True
+    )
