@@ -5,35 +5,11 @@ Production-ready, fully modular, fallback-safe.
 
 Inputs  : skill, claimed_level, evidence_score
 Outputs : structured JSON with multi-dimensional scores + verdict
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  YOUR AZURE SETUP (pre-configured)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Endpoint 1 : https://nikxgupta-9818-resource.openai.azure.com/openai/v1
-  Endpoint 2 : https://nikxgupta-6518-resource.openai.azure.com/openai/v1
-  Project    : https://nikxgupta-6518-resource.services.ai.azure.com/api/projects/nikxgupta-6518
-
-  Key rotation  : both endpoints are tried in order; if one is
-                  exhausted (429) or fails, the next is used automatically.
-
-  Deployment    : auto-detected at startup via /models list endpoint.
-                  You can also override via AZURE_OPENAI_MODEL env var.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  REQUIRED — set your API key(s):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Option A — same key for both endpoints:
-      export AZURE_OPENAI_API_KEY=your-gpt5-key
-
-  Option B — separate key per endpoint (better for key exhaustion):
-      export AZURE_OPENAI_API_KEY_1=key-for-endpoint-1
-      export AZURE_OPENAI_API_KEY_2=key-for-endpoint-2
-
-  Then run:
-      python skill_testing_agent.py
 """
 
 from __future__ import annotations
+from dotenv import load_dotenv
+load_dotenv()
 
 import json
 import logging
@@ -45,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import httpx
+from openai import AzureOpenAI
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -335,7 +311,6 @@ def calibrate_level(claimed: str, evidence: float) -> Level:
     """
     Adjust difficulty based on evidence score.
     evidence < 0.3  → downgrade | evidence > 0.7 → upgrade | else → keep
-    Boundaries enforced: beginner (min) ↔ advanced (max).
     """
     try:
         base = Level(claimed.lower().strip())
@@ -359,290 +334,80 @@ def calibrate_level(claimed: str, evidence: float) -> Level:
 
 
 # ---------------------------------------------------------------------------
-# Azure OpenAI Client — multi-endpoint, key rotation, auto deployment detection
+# Azure OpenAI Client — NEW (mentor-provided, using openai SDK)
 # ---------------------------------------------------------------------------
 
-# ── Your Azure endpoints (hardcoded from your project details) ───────────────
-_AZURE_ENDPOINTS: list[dict[str, str]] = [
-    {
-        "endpoint": "https://nikxgupta-9818-resource.openai.azure.com/openai/v1",
-        "key_env":  "AZURE_OPENAI_API_KEY_1",      # specific key for this endpoint
-        "fallback_key_env": "AZURE_OPENAI_API_KEY", # shared key fallback
-        "label":    "endpoint-9818",
-    },
-    {
-        "endpoint": "https://nikxgupta-6518-resource.openai.azure.com/openai/v1",
-        "key_env":  "AZURE_OPENAI_API_KEY_2",
-        "fallback_key_env": "AZURE_OPENAI_API_KEY",
-        "label":    "endpoint-6518",
-    },
-]
-
-# Common Azure OpenAI deployment names to try if auto-detection fails
-_COMMON_DEPLOYMENTS = [
-    "gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-4-turbo",
-    "gpt-35-turbo", "gpt-35-turbo-16k", "gpt-4-32k",
-]
-
-_AZURE_API_VERSION = "2024-02-15-preview"
+# ── Defaults (override via environment variables) ────────────────────────────
+_DEFAULT_ENDPOINT   = "https://nikxgupta-9818-resource.cognitiveservices.azure.com/"
+_DEFAULT_KEY        = " "
+_DEFAULT_API_VERSION = "2024-10-21"
+_DEFAULT_DEPLOYMENT  = "gpt-4.1"
 
 
 class AzureLLMClient:
     """
-    Azure OpenAI client with:
-      • Multi-endpoint support (2 endpoints from your project)
-      • Automatic key rotation on 429 (rate limit / exhaustion)
-      • Auto deployment-name detection via /models API
-      • Full fallback — never crashes
+    Thin wrapper around the official openai SDK's AzureOpenAI client.
 
-    Environment Variables
-    ---------------------
-    AZURE_OPENAI_API_KEY    Shared key used by both endpoints (simplest setup)
-    AZURE_OPENAI_API_KEY_1  Key specifically for endpoint-9818 (optional)
-    AZURE_OPENAI_API_KEY_2  Key specifically for endpoint-6518 (optional)
-    AZURE_OPENAI_MODEL      Deployment name override (skip auto-detection)
-    AZURE_API_VERSION       API version override (default: 2024-02-15-preview)
-    LLM_TIMEOUT             Request timeout in seconds (default: 30)
+    Configuration (environment variables override the hardcoded defaults):
+      AZURE_OPENAI_ENDPOINT     — Azure Cognitive Services endpoint URL
+      AZURE_OPENAI_KEY          — API key
+      AZURE_OPENAI_API_VERSION  — API version  (default: 2024-10-21)
+      AZURE_OPENAI_DEPLOYMENT   — Deployment / model name (default: gpt-4.1)
     """
 
     def __init__(self) -> None:
-        self.api_version  = os.getenv("AZURE_API_VERSION", _AZURE_API_VERSION)
-        self.timeout      = int(os.getenv("LLM_TIMEOUT", "30"))
-        self._model_override = os.getenv("AZURE_OPENAI_MODEL", "").strip()
-
-        # Build list of (endpoint, api_key) pairs — skip any with no key
-        self._targets: list[dict[str, str]] = []
-        for cfg in _AZURE_ENDPOINTS:
-            key = (
-                os.getenv(cfg["key_env"], "").strip()
-                or os.getenv(cfg["fallback_key_env"], "").strip()
+        self._deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", _DEFAULT_DEPLOYMENT)
+        try:
+            self._client = AzureOpenAI(
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", _DEFAULT_ENDPOINT),
+                api_key=os.getenv("AZURE_OPENAI_KEY", _DEFAULT_KEY),
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", _DEFAULT_API_VERSION),
             )
-            if key:
-                self._targets.append({
-                    "endpoint": cfg["endpoint"].rstrip("/"),
-                    "api_key":  key,
-                    "label":    cfg["label"],
-                    "model":    "",   # filled by auto-detect
-                })
-
-        if not self._targets:
-            log.warning(
-                "No Azure API key found. Set AZURE_OPENAI_API_KEY (or "
-                "AZURE_OPENAI_API_KEY_1 / _2). Running in fallback mode."
-            )
-        else:
+            self._configured = True
             log.info(
-                "Azure LLM client initialised with %d endpoint(s): %s",
-                len(self._targets),
-                [t["label"] for t in self._targets],
+                "Azure LLM client ready — endpoint: %s | deployment: %s",
+                os.getenv("AZURE_OPENAI_ENDPOINT", _DEFAULT_ENDPOINT),
+                self._deployment,
             )
-            self._detect_deployments()
-
-    # ------------------------------------------------------------------
-    # Deployment auto-detection
-    # ------------------------------------------------------------------
-
-    def _detect_deployments(self) -> None:
-        """
-        Query /models on each endpoint to find the available deployment name.
-        Falls back to common deployment name list if the API call fails.
-        """
-        if self._model_override:
-            for t in self._targets:
-                t["model"] = self._model_override
-            log.info("Using deployment override: '%s'", self._model_override)
-            return
-
-        for t in self._targets:
-            url = f"{t['endpoint']}/models"
-            try:
-                resp = httpx.get(
-                    url,
-                    headers={"api-key": t["api_key"]},
-                    params={"api-version": self.api_version},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    models = [m.get("id", "") for m in data.get("data", [])]
-                    if models:
-                        t["model"] = models[0]
-                        log.info(
-                            "[%s] Auto-detected deployment: '%s' (all available: %s)",
-                            t["label"], t["model"], models,
-                        )
-                        continue
-                log.warning(
-                    "[%s] Could not list models (HTTP %s). Trying common names.",
-                    t["label"], resp.status_code,
-                )
-            except Exception as exc:
-                log.warning("[%s] Model detection failed: %s", t["label"], exc)
-
-            # Fallback: probe common deployment names
-            t["model"] = self._probe_deployment(t)
-
-    def _probe_deployment(self, target: dict[str, str]) -> str:
-        """
-        Try each common deployment name with a minimal /chat/completions call.
-        Returns the first that succeeds, or the first in the list as last resort.
-        """
-        url = f"{target['endpoint']}/chat/completions"
-        for name in _COMMON_DEPLOYMENTS:
-            try:
-                resp = httpx.post(
-                    url,
-                    headers={
-                        "api-key":      target["api_key"],
-                        "Content-Type": "application/json",
-                    },
-                    params={"api-version": self.api_version},
-                    json={
-                        "model":      name,
-                        "messages":   [{"role": "user", "content": "hi"}],
-                        "max_tokens": 1,
-                    },
-                    timeout=10,
-                )
-                # 200 = works, 400 = model exists but bad request → still found it
-                if resp.status_code in (200, 400):
-                    log.info(
-                        "[%s] Deployment '%s' responded (HTTP %s).",
-                        target["label"], name, resp.status_code,
-                    )
-                    return name
-                if resp.status_code == 404:
-                    continue  # deployment doesn't exist, try next
-            except Exception:
-                continue
-
-        log.warning(
-            "[%s] Could not auto-detect deployment. Defaulting to 'gpt-4o'. "
-            "Override with AZURE_OPENAI_MODEL env var.",
-            target["label"],
-        )
-        return _COMMON_DEPLOYMENTS[0]
-
-    # ------------------------------------------------------------------
-    # Core call with key rotation
-    # ------------------------------------------------------------------
-
-    def _is_configured(self) -> bool:
-        return len(self._targets) > 0
+        except Exception as exc:
+            log.warning("Failed to initialise AzureOpenAI client: %s", exc)
+            self._configured = False
 
     def complete(self, system_prompt: str, user_prompt: str) -> str | None:
         """
-        Try each configured endpoint in order.
-        On 429 (rate limit / key exhaustion) → rotate to next endpoint.
-        On other errors → also rotate (best-effort).
-        Returns text response or None. NEVER raises.
+        Send a chat completion request.
+        Returns the response text, or None on any failure (never raises).
         """
-        if not self._is_configured():
-            log.info("No Azure endpoints configured — using fallback.")
+        if not self._configured:
+            log.info("Azure client not configured — using fallback.")
             return None
 
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            "temperature": 0.3,
-            "max_tokens":  1024,
-        }
+        messages: list[dict] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ]
 
-        for i, target in enumerate(self._targets):
-            endpoint = target["endpoint"]
-            api_key  = target["api_key"]
-            model    = target["model"] or _COMMON_DEPLOYMENTS[0]
-            label    = target["label"]
-            url      = f"{endpoint}/chat/completions"
-
-            log.info("Trying [%s] model=%s (attempt %d/%d)",
-                     label, model, i + 1, len(self._targets))
-
-            try:
-                resp = httpx.post(
-                    url,
-                    headers={
-                        "api-key":      api_key,
-                        "Content-Type": "application/json",
-                    },
-                    params={"api-version": self.api_version},
-                    json={**payload, "model": model},
-                    timeout=self.timeout,
-                )
-
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
-                    log.info("[%s] Call succeeded.", label)
-                    return content
-
-                if resp.status_code == 429:
-                    retry_after = resp.headers.get("Retry-After", "?")
-                    log.warning(
-                        "[%s] Rate limited / key exhausted (429). "
-                        "Retry-After: %s s. Rotating to next endpoint.",
-                        label, retry_after,
-                    )
-                    continue  # try next endpoint
-
-                if resp.status_code in (401, 403):
-                    log.warning(
-                        "[%s] Authentication failed (%s). Check your API key. "
-                        "Rotating to next endpoint.",
-                        label, resp.status_code,
-                    )
-                    continue
-
-                if resp.status_code == 404:
-                    log.warning(
-                        "[%s] Deployment '%s' not found (404). "
-                        "Set AZURE_OPENAI_MODEL to your exact deployment name. "
-                        "Rotating to next endpoint.",
-                        label, model,
-                    )
-                    continue
-
-                log.warning(
-                    "[%s] Unexpected HTTP %s: %s",
-                    label, resp.status_code, resp.text[:200],
-                )
-                continue
-
-            except httpx.TimeoutException:
-                log.warning("[%s] Request timed out after %ss.", label, self.timeout)
-                continue
-            except httpx.RequestError as exc:
-                log.warning("[%s] Network error: %s", label, exc)
-                continue
-            except (KeyError, IndexError, TypeError) as exc:
-                log.warning("[%s] Response parse error: %s", label, exc)
-                continue
-            except Exception as exc:
-                log.warning("[%s] Unexpected error: %s", label, exc)
-                continue
-
-        log.warning(
-            "All %d Azure endpoint(s) failed — using rule-based fallback.",
-            len(self._targets),
-        )
-        return None
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._deployment,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=1024,
+            )
+            content = resp.choices[0].message.content or ""
+            log.info("Azure LLM call succeeded.")
+            return content
+        except Exception as exc:
+            log.warning("Azure LLM call failed: %s", exc)
+            return None
 
     def status(self) -> dict[str, Any]:
-        """Return current configuration status for diagnostics."""
+        """Return current configuration for diagnostics."""
         return {
-            "configured_endpoints": len(self._targets),
-            "endpoints": [
-                {
-                    "label":    t["label"],
-                    "endpoint": t["endpoint"],
-                    "model":    t["model"] or "(not detected)",
-                    "has_key":  bool(t["api_key"]),
-                }
-                for t in self._targets
-            ],
-            "api_version": self.api_version,
+            "configured":  self._configured,
+            "endpoint":    os.getenv("AZURE_OPENAI_ENDPOINT", _DEFAULT_ENDPOINT),
+            "deployment":  self._deployment,
+            "api_version": os.getenv("AZURE_OPENAI_API_VERSION", _DEFAULT_API_VERSION),
         }
 
 
@@ -924,12 +689,10 @@ if __name__ == "__main__":
 
     # Print current Azure config status
     status = _llm.status()
-    print(f"\n  Configured endpoints : {status['configured_endpoints']}")
-    for ep in status["endpoints"]:
-        print(f"  [{ep['label']}]")
-        print(f"    URL   : {ep['endpoint']}")
-        print(f"    Model : {ep['model']}")
-        print(f"    Key   : {'SET ✓' if ep['has_key'] else 'MISSING ✗'}")
+    print(f"\n  Configured : {status['configured']}")
+    print(f"  Endpoint   : {status['endpoint']}")
+    print(f"  Deployment : {status['deployment']}")
+    print(f"  API Version: {status['api_version']}")
     print()
 
     sample_answer = (
