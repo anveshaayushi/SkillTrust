@@ -412,7 +412,14 @@ class AzureLLMClient:
 
 
 # Module-level singleton
-_llm = AzureLLMClient()
+# Module-level singleton — lazy initialized to avoid blocking FastAPI startup
+_llm: AzureLLMClient | None = None
+
+def get_llm() -> AzureLLMClient:
+    global _llm
+    if _llm is None:
+        _llm = AzureLLMClient()
+    return _llm
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +456,7 @@ def generate_task(skill: str, level: Level) -> Task:
     """
     normalized = skill.lower().strip()
 
-    raw = _llm.complete(_TASK_GEN_SYSTEM, _task_gen_user_prompt(normalized, level))
+    raw = get_llm().complete(_TASK_GEN_SYSTEM, _task_gen_user_prompt(normalized, level))
     if raw and len(raw.strip()) >= 20:
         log.info("Task generated via Azure OpenAI.")
         return Task(skill=normalized, level=level, description=raw.strip(), source="llm")
@@ -615,7 +622,7 @@ def evaluate_answer(task: Task, answer: str) -> dict[str, Any]:
         )
 
     system = _EVAL_SYSTEM + f"\n\nSkill guidance: {_skill_evaluator.hint(task.skill)}"
-    raw    = _llm.complete(system, _eval_user_prompt(task, answer))
+    raw    = get_llm().complete(system, _eval_user_prompt(task, answer))
 
     if raw:
         parsed = _parse_llm_eval(raw)
