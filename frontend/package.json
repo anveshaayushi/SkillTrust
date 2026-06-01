@@ -1,0 +1,30 @@
+{
+  "name": "frontend-resume-engine",
+  "version": "1.0.0",
+  "description": "Person 5 - Frontend + Resume Engine for AI Candidate Evaluation Hackathon",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.22.0",
+    "axios": "^1.6.7",
+    "framer-motion": "^11.0.6",
+    "recharts": "^2.12.0",
+    "react-dropzone": "^14.2.3",
+    "react-hot-toast": "^2.4.1",
+    "jspdf": "^2.5.1",
+    "html2canvas": "^1.4.1",
+    "lucide-react": "^0.383.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.0",
+    "tailwindcss": "^3.4.1",
+    "autoprefixer": "^10.4.17",
+    "postcss": "^8.4.35"
+  }
+}
